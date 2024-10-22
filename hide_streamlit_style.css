@@ -1,0 +1,9 @@
+/* Hide the "Made with Streamlit" link */
+footer {
+    visibility: hidden;
+}
+
+/* Remove the blank space that is left after hiding the footer */
+.stApp {
+    bottom: 0;
+}
