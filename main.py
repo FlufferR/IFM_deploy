@@ -161,7 +161,7 @@ def calculate_amount(city_cap, vat_included,
 
 # Change style of streamlit
 st.set_page_config(
-page_title='BP',
+page_title='CityCap-TEST',
 page_icon='kt.ico'  # http is fine too
 )
 # Change style with CSS
