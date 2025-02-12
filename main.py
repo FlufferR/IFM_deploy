@@ -1,140 +1,296 @@
-# Use Streamlit to upload excel file
-import tempfile
-from datetime import datetime
-
 import streamlit as st
 import pandas as pd
+from rapidfuzz import process, fuzz
+from datetime import datetime
 
 
-def bo_process(bo_file, map_file):
-    # Read the first sheet of bo_file
-    bo_df = pd.read_excel(bo_file, sheet_name=0)
-    map_vendor = pd.read_excel(map_file, sheet_name='Sending Entity_Vendor Mapping')
-    map_receiving = pd.read_excel(map_file, sheet_name='Receiving Entity')
-    map_area = pd.read_excel(map_file, sheet_name='Country Area Mapping')
-
-    # Keep 'Vendor Id - Ven' 'Vendor Name1 - Ven' 'Vendor Tyep' 'Country' in map_vendor
-    map_vendor = map_vendor[['Vendor Id - Ven', 'Vendor Name1 - Ven', 'Vendor Tyep', 'Country']]
-    map_receiving = map_receiving[['AP Business Unit', 'Receiving Country', 'LE Name']]
-    map_area = map_area[['Country', 'Area']]
-
-    # Drop duplicates in map_vendor based on 'Vendor Id - Ven'
-    # map_vendor.drop_duplicates(subset=['Vendor Id - Ven'], keep='first', inplace=True)
-
-    # Merge bo_df with map_vendor on 'Vendor Id - Ven' in map_vendor and 'Vendor Id - AP' in bo_df
-    bo_df = pd.merge(bo_df, map_vendor, left_on='Vendor Id - AP', right_on='Vendor Id - Ven', how='left')
-    bo_df = pd.merge(bo_df, map_receiving, left_on='Business Unit - AP', right_on='AP Business Unit', how='left')
-    bo_df = pd.merge(bo_df, map_area, left_on='Country', right_on='Country', how='left')
-
-    # Rename 'Vendor Tyep' to 'External/INTERFIRM' 'Country' to 'Bill To/FmCountry'
-    bo_df.rename(columns={'Vendor Tyep': 'External/INTERFIRM', 'Country': 'Bill To/FmCountry',
-                          'Vendor Name1 - Ven': 'Bill To/Fm Legal Entity', 'Receiving Country': 'GC Country',
-                          'LE Name': 'GC Legal Entity', 'Area': 'Bill To/Fm Area', 'Invoice Id - AP': 'Invoice No.',
-                          'Invoice Date - AP': 'Invoice Date', 'Currency Cd - AP': 'Base currency of Country',
-                          'Monetary Amount Detail - AP': 'Base amount of Country',
-                          'Foreign Currency - AP': 'Original Currency',
-                          'Foreign Amount Detail - AP': 'Original billing amount',
-                          'Business Unit - AP': 'Business Unit - AP/AR', 'Vendor Id - AP': 'Vendor ID (AP)',
-                          }, inplace=True)
-
-    # Add 'Account' = if 'External/INTERFIRM' == 'IFM' then '38200015' else '38000000'
-    bo_df['Account'] = bo_df.apply(lambda x: '38200015' if x['External/INTERFIRM'] == 'IFM' else '38000000', axis=1)
-
-    bo_df = bo_df[['External/INTERFIRM', 'GC Country', 'GC Legal Entity', 'Bill To/Fm Area',
-                   'Bill To/FmCountry', 'Bill To/Fm Legal Entity', 'Invoice No.', 'Invoice Date',
-                   'Base currency of Country', 'Base amount of Country', 'Original Currency',
-                   'Original billing amount', 'Business Unit - AP/AR', 'Account', 'Vendor ID (AP)']]
-    return bo_df
+# Function to fuzzy match
+def fuzzy_match(query, choices, limit=50):
+    """
+    对输入的关键字进行模糊匹配。
+    :param query: 用户输入的关键字
+    :param choices: 数据源列表
+    :param limit: 返回的最大匹配结果数量
+    :return: 匹配结果列表
+    """
+    if not query:
+        return []
+    
+    results = process.extract(query, choices, limit=limit, scorer=fuzz.WRatio)
+    
+    return [result[0] for result in results if result[1] > 70] # 相似度大于 70
 
 
-def ifm_process(bo_df, last_month_file, exchange_rate):
-    # Read last_month_file
-    last_month_df = pd.read_excel(last_month_file, sheet_name=0)
-
-    # Concat bo_df and last_month_df
-    ifm_df = pd.concat([last_month_df, bo_df], axis=0, join='outer', ignore_index=True)
-    # ifm_df['Ex. Rate to USD'] = if ['Original Currency'] == 'USD' then 1 else exchange_rate
-    ifm_df['Ex. Rate to USD'] = ifm_df.apply(lambda x: 1 if x['Original Currency'] == 'USD' else exchange_rate, axis=1)
-    ifm_df['Function '] = 'AP'
-    ifm_df['Amount in USD'] = ifm_df['Original billing amount'] / ifm_df['Ex. Rate to USD']
-
-    # Sort in ascending order by 'Invoice No.'
-    ifm_df.sort_values(by=['Invoice No.'], ascending=True, inplace=True)
-
-    # ifm_df['Bill To/Fm SubArea'] = if ifm_df['Bill To/FmCountry'] ==
-    # 'CHINA' or 'HONG KONG' or 'TAIWAN' then 'Great China'
-    ifm_df['Bill To/Fm SubArea'] = ifm_df.apply(lambda x: 'Great China' if x['Bill To/FmCountry'] in
-                                                                           ['China', 'China-HK', 'China-TW'] else '', axis=1)
-
-    # Group by y 'Invoice No.' and 'Vendor ID (AP)'
-    ifm_df = ifm_df.groupby(['Invoice No.', 'Vendor ID (AP)']).agg({
-        'External/INTERFIRM': 'first',
-        'GC Country': 'first',
-        'GC Legal Entity': 'first',
-        'Bill To/Fm Area': 'first',
-        'Bill To/FmCountry': 'first',
-        'Bill To/Fm Legal Entity': 'first',
-        'Bill To/Fm SubArea': 'first',
-        'Invoice No.': 'first',
-        'Invoice Date': 'first',
-        # 'Base currency of Country': 'first',
-        'Base amount of Country': 'sum',
-        'Original Currency': 'first',
-        'Original billing amount': 'sum',
-        'Business Unit - AP/AR': 'first',
-        'Account': 'first',
-        'Vendor ID (AP)': 'first',
-        'Ex. Rate to USD': 'first',
-        'Function ': 'first',
-        'Amount in USD': 'sum'
-    })
-
-    # Delete rows which 'Base amount of Country' is 0
-    ifm_df = ifm_df[ifm_df['Base amount of Country'] != 0]
-
-    return ifm_df
+# Function to match iscontain
+def substring_search(query, choices):
+    """
+    对输入的关键字进行子字符串匹配。
+    :param query: 用户输入的关键字
+    :param choices: 数据源列表
+    :return: 匹配结果列表
+    """
+    if not query:
+        return []
+    # 不区分大小写的匹配
+    query = query.lower()
+    matches = [item for item in choices if query in item.lower()]
+    return matches    
 
 
-def df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8-sig')
-
-
-def main():
-    st.set_page_config(
-        page_title='IFM Tool',
-        page_icon='kt.ico'  # http is fine too
+def parse_dates(df):
+    """解析Dates列为开始月份和结束月份"""
+    month_map = {
+        'Jan':1, 'Feb':2, 'Mar':3, 'Apr':4, 'May':5, 'Jun':6,
+        'Jul':7, 'Aug':8, 'Sep':9, 'Oct':10, 'Nov':11, 'Dec':12,
+        'May ':5, 'Jun ':6, 'Jul ':7, 'Aug ':8, 'Sep ':9, 'Oct ':10, 'Nov ':11, 'Dec ':12
+    }
+    
+    def extract_month(date_str):
+        parts = date_str.split(' to ')
+        start_month = parts[0].split('-')[0].strip().capitalize()[:3]  # 取前3个字符
+        end_month = parts[1].split('-')[0].strip().capitalize()[:3]
+        
+        try:
+            return month_map[start_month], month_map[end_month]
+        except KeyError as e:
+            raise ValueError(f"无效的月份缩写: {e.args[0]},请检查日期格式是否为'Jan-1 to Dec-31'") from e
+    
+    df[['Start Month', 'End Month']] = df['Dates'].apply(
+        lambda x: pd.Series(extract_month(x))
     )
-
-    # Hide the streamlit style with CSS
-    with open('hide_streamlit_style.css') as f:
-        st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-
-    st.title("IFM Report Generator")
-    bo_file = st.file_uploader("Upload BO file", type=["xlsx", "xls"])
-    last_month_file = st.file_uploader("Upload Last Month file", type=["xlsx", "xls"])
-    map_file = st.file_uploader("Upload Map file", type=["xlsx", "xls"])
-
-    # Add a label used to input the exchange rate
-    exchange_rate = st.number_input("Exchange Rate", value=1.0, step=0.01)
-
-    # Add a button to trigger the calculation
-    if st.button("Generate"):
-        # Perform the calculation and display the result
-        bo_df = bo_process(bo_file, map_file)
-        result = ifm_process(bo_df, last_month_file, exchange_rate)
-        st.write(result)
-        output = df_to_csv(result)
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        # Add a button to download the result
-        st.download_button(
-            label='Download data',
-            data=output,
-            file_name=f'IFM report {current_time}.csv',
-            # mime='application/vnd.ms-excel'
-            mime='text/csv'
-        )
+    return df
 
 
-if __name__ == "__main__":
-    main()
+def get_city_cap(city_name, country_name, month, rank, mate):
+    if city_name != '':
+        city_cap = df_city[(df_city['City'] == city_name) & (df_city['Start Month'] <= month) & (df_city['End Month'] >= month)]['City Cap'].iloc[0]
+        currency = df_city[(df_city['City'] == city_name) & (df_city['Start Month'] <= month) & (df_city['End Month'] >= month)]['Currency'].iloc[0]
+        vat_included = df_city[(df_city['City'] == city_name) & (df_city['Start Month'] <= month) & (df_city['End Month'] >= month)]['VAT/GST Included'].iloc[0]
+        
+        if mate is True and (rank == 'PPEDD' or rank == 'SM & M'):
+            city_cap = city_cap * 2
+            msg = f'{city_name} in {month} month, {currency} {city_cap}, VAT/GST Included: {vat_included}'
+        else:
+            msg = f'{city_name} in {month} month, {currency} {city_cap}, VAT/GST Included: {vat_included}'
+            
+    elif country_name != '':
+        city_cap = df_country[(df_country['Location'] == country_name) & (df_country['Start Month'] <= month) & (df_country['End Month'] >= month)]['City Cap'].iloc[0]
+        currency = df_country[(df_country['Location'] == country_name) & (df_country['Start Month'] <= month) & (df_country['End Month'] >= month)]['Currency'].iloc[0]
+        vat_included = df_country[(df_country['Location'] == country_name) & (df_country['Start Month'] <= month) & (df_country['End Month'] >= month)]['VAT/GST Included'].iloc[0]
+
+        if mate is True and (rank == 'PPEDD' or rank == 'SM & M'):
+            city_cap = city_cap * 2
+            msg = f'{country_name} in {month} month, {currency} {city_cap}, VAT/GST Included: {vat_included}'
+        else:
+            msg = f'{country_name} in {month} month, {currency} {city_cap}, VAT/GST Included:{vat_included}'
+
+    elif rank != '':
+        if rank == 'PPEDD':
+            city_cap = 150
+            currency = 'USD'
+            vat_included = 'No'
+
+            if mate is True:
+                city_cap = city_cap * 2
+                msg = f'{currency} {city_cap}, VAT/GST Included: {vat_included}'
+            else:
+                msg = f'{currency} {city_cap}, VAT/GST Included: {vat_included}'
+
+        elif rank == 'SM & M':
+            city_cap = 120
+            currency = 'USD'
+            vat_included = 'No'
+
+            if mate is True:
+                city_cap = city_cap * 2
+                msg = f'{currency} {city_cap}, VAT/GST Included: {vat_included}'
+            else:
+                msg = f'{currency} {city_cap}, VAT/GST Included: {vat_included}'
+        
+        elif rank == 'Senior & Staff':
+            city_cap = 120
+            currency = 'USD'
+            vat_included = 'No'
+            
+            msg = f'{currency} {city_cap}, VAT/GST Included: {vat_included}'
+
+    return city_cap, currency, vat_included, msg
+
+
+# Function to calculate amount
+def calculate_amount(city_cap, vat_included, 
+                     total_cost, num_nights, service_fee, tax, other):
+    
+    amount_accommodation = total_cost - service_fee - other
+
+    if vat_included == 'Yes':
+        if tax > 1:
+            max_amount = amount_accommodation * num_nights + tax
+            if amount_accommodation > max_amount:
+                amount = max_amount
+            else:
+                amount = amount_accommodation
+
+        elif tax > 0:
+            max_amount = amount_accommodation * num_nights * (1 + tax)
+            if amount_accommodation > max_amount:
+                amount = max_amount
+            else:
+                amount = amount_accommodation
+
+    else:
+        if tax > 1:
+            max_amount = city_cap * 1.15 * num_nights + tax
+            if amount_accommodation > max_amount:
+                amount = max_amount
+            else:
+                amount = amount_accommodation
+
+        elif tax >= 0:
+            max_amount = city_cap * 1.15 * num_nights * (1 + tax)
+            if amount_accommodation > max_amount:
+                amount = max_amount
+            else:
+                amount = amount_accommodation
+
+    return amount
+
+
+
+
+
+# Change style of streamlit
+st.set_page_config(
+page_title='BP',
+page_icon='kt.ico'  # http is fine too
+)
+# Change style with CSS
+with open('style.css') as f:
+    st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+
+
+# Title
+st.title('🎰 City Cap')
+
+rank_list = ['PPEDD', 'SM & M', 'Senior & Staff']
+
+# Initialize session state
+if 'city_cap_msg' not in st.session_state:
+    st.session_state.city_cap_msg = ''
+
+# With expander:
+with st.expander('Upload City Cap'):
+    # Upload files
+    tb_path = st.file_uploader("Select data", type=["xlsx", "xls"], accept_multiple_files=False)
+
+    # Initialize lists
+    city_list = []
+    country_list = []
+
+    # Read data
+    if tb_path:
+        df_city = pd.read_excel(tb_path, sheet_name=2, header=7, index_col=None, dtype=object)
+        df_country = pd.read_excel(tb_path, sheet_name=3, header=7, index_col=None, dtype=object)
+
+        # Replace \n with space in columns' names
+        df_city.columns = df_city.columns.str.replace('\n', ' ')
+        df_country.columns = df_country.columns.str.replace('\n', ' ')
+
+        city_list = df_city['City'].tolist()  # Override if file is uploaded
+        country_list = df_country['Location'].tolist()
+
+        df_city = parse_dates(df_city)  # Parse dates
+        df_country = parse_dates(df_country)
+
+        # st.write(df_city, df_country)
+
+# 使用表单包装城市cap相关输入
+with st.form('city_cap_form'):
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        # Input City 
+        city_input = st.text_input('City', key='city_name_form')
+        
+        if city_input and tb_path:
+            city_matches = substring_search(city_input, city_list)
+            if city_matches:
+                st.write(city_matches)
+        
+
+        country_input = ''  # 初始化变量
+        if not (city_input and tb_path):
+            country_input = st.text_input('Country', key='country name')
+        if country_input:
+                country_matches = substring_search(country_input, country_list)
+                if country_matches:
+                    st.write(country_matches)
+                else:
+                    pass
+            
+
+    with col2:
+
+        # Select rank
+        rank_input = st.selectbox('Rank', rank_list, key='rank')
+
+        # Month selection
+        month_input = st.selectbox('Month', range(1, 13), key='month')
+
+        # Y/N selection
+        mate_check = st.checkbox('Room mate?', key='room mate')
+
+
+    # City cap button
+    button_city_cap = st.form_submit_button('Get City Cap')
+    if button_city_cap:
+        return_city = get_city_cap(city_input, country_input, month_input, rank_input, mate_check)
+        
+        st.session_state.cal_city_cap = return_city[0]  # 存储到session_state
+        st.session_state.cal_currency = return_city[1]
+        st.session_state.cal_vat_included = return_city[2]
+        st.session_state.city_cap_msg = return_city[3]
+
+    
+st.success(st.session_state.city_cap_msg)
+if st.session_state.city_cap_msg != '':
+    # Input form
+    with st.form('form'):
+        col3, col4 = st.columns([1, 1])
+        with col3:
+            # Total cost
+            total_cost = st.number_input('Total cost', key='total cost')
+            # Check-in date
+            check_in_date = st.date_input('Check-in date', key='check in date')
+            # Check-out date
+            check_out_date = st.date_input('Check-out date', key='check out date')
+
+            # num_nights = check_out_date - check_in_date
+            num_nights = (check_out_date - check_in_date).days
+
+        
+        with col4:
+            # Service Fee
+            service_fee = st.number_input('Service fee', key='service fee')
+            # Tax
+            tax = st.number_input('Tax', key='tax')
+            # Other
+            other = st.number_input('Other', key='other')
+
+        # Submit button
+        submitted = st.form_submit_button('Calculate')
+        if submitted:
+            calcu_cost = calculate_amount(
+                        city_cap=st.session_state['cal_city_cap'],
+                        vat_included=st.session_state['cal_vat_included'],
+                        total_cost=total_cost,
+                        num_nights=num_nights, 
+                        service_fee=service_fee, 
+                        tax=tax, 
+                        other=other)
+            
+            st.success(f"Reimbursable Amount: {calcu_cost}")
+
+
+# Debugging
+st.write(st.session_state)
