@@ -1,24 +1,24 @@
 import streamlit as st
 import pandas as pd
-from rapidfuzz import process, fuzz
+# from rapidfuzz import process, fuzz
 from datetime import datetime
 
 
-# Function to fuzzy match
-def fuzzy_match(query, choices, limit=50):
-    """
-    对输入的关键字进行模糊匹配。
-    :param query: 用户输入的关键字
-    :param choices: 数据源列表
-    :param limit: 返回的最大匹配结果数量
-    :return: 匹配结果列表
-    """
-    if not query:
-        return []
+# # Function to fuzzy match
+# def fuzzy_match(query, choices, limit=50):
+#     """
+#     对输入的关键字进行模糊匹配。
+#     :param query: 用户输入的关键字
+#     :param choices: 数据源列表
+#     :param limit: 返回的最大匹配结果数量
+#     :return: 匹配结果列表
+#     """
+#     if not query:
+#         return []
     
-    results = process.extract(query, choices, limit=limit, scorer=fuzz.WRatio)
+#     results = process.extract(query, choices, limit=limit, scorer=fuzz.WRatio)
     
-    return [result[0] for result in results if result[1] > 70] # 相似度大于 70
+#     return [result[0] for result in results if result[1] > 70] # 相似度大于 70
 
 
 # Function to match iscontain
